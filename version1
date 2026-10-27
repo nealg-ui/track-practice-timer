@@ -1,0 +1,303 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#10253d">
+<title>Track & XC Practice Timer</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b1728;color:#eef5ff;font-family:system-ui,Arial}
+main{max-width:850px;margin:auto;padding:18px}
+h1{font-size:24px;margin:0}
+h2{font-size:19px}
+p,small{color:#b9c8da}
+.panel{background:#142840;border:1px solid #34506d;border-radius:16px;padding:16px;margin:15px 0}
+.timer{text-align:center;background:#153b51}
+.timer.rest{background:#3a3159}
+.clock{font-size:clamp(65px,16vw,120px);font-weight:800;font-variant-numeric:tabular-nums}
+.phase{font-size:26px;font-weight:bold}
+.row{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin:10px 0}
+button,input,select{font:inherit;padding:11px;border-radius:9px;border:1px solid #647e9b}
+button{background:#2c577b;color:white;font-weight:bold;cursor:pointer}
+button:disabled{opacity:.4}
+.primary{background:#16876f}
+.danger{background:#814b4b}
+input,select{background:#0d2034;color:white;min-width:0}
+input[type=text]{width:100%}
+input[type=number]{width:85px}
+label{display:block;margin:7px 0}
+.segment{border-top:1px solid #38516b;padding:12px 0}
+.segment .row{align-items:end}
+.muted{color:#b9c8da}
+#status{color:#9ff2d5;min-height:20px}
+</style>
+</head>
+<body>
+<main>
+<h1>🏃 Track & Cross-Country Timer</h1>
+<small>Custom timed workouts for coaches</small>
+
+<section class="panel timer" id="timerPanel">
+<div class="phase" id="phase">Ready to practice</div>
+<div class="clock" id="clock">00:00</div>
+<div id="progress">Segment 1 of 2</div>
+<div class="muted" id="remaining"></div>
+<div class="row" style="justify-content:center">
+<button class="primary" id="start">Start</button>
+<button id="pause">Pause</button>
+<button id="skip">Skip</button>
+<button class="danger" id="reset">Reset</button>
+</div>
+<div class="row" style="justify-content:center">
+<label>Clock
+<select id="mode">
+<option value="down">Count Down</option>
+<option value="up">Count Up</option>
+</select></label>
+<label><input type="checkbox" id="sound" checked> Audio alerts</label>
+</div>
+</section>
+
+<section class="panel">
+<h2>Saved Workouts</h2>
+<label>Workout Name
+<input id="workoutName" type="text" placeholder="Tuesday Intervals">
+</label>
+<div class="row">
+<button class="primary" id="save">Save Workout</button>
+<select id="saved"><option value="">Select saved workout</option></select>
+<button id="load">Load</button>
+<button class="danger" id="delete">Delete</button>
+</div>
+<p>Workouts are saved in this browser on this device.</p>
+<div id="status"></div>
+</section>
+
+<section class="panel">
+<h2>Workout Segments</h2>
+<p>Each segment has its own name and duration. Use fewer or more than 24 segments.</p>
+<div id="segments"></div>
+<div class="row">
+<button id="add">+ Add Segment</button>
+<button id="pair">+ Run & Recovery</button>
+<button id="repeat">Repeat Sequence</button>
+</div>
+</section>
+<p>Keep the app open during practice. Phone browsers may restrict audio or suspend timers when the screen is locked.</p>
+</main>
+
+<script>
+(()=>{
+"use strict";
+const $=id=>document.getElementById(id);
+const KEY="xc-workouts-v3",DRAFT="xc-draft-v3";
+let segments=[
+{name:"Run",type:"run",seconds:90},
+{name:"Recovery",type:"rest",seconds:120}
+];
+let index=0,elapsed=0,running=false,last=0,ticker=null,audio=null;
+
+const clamp=n=>Math.max(0,Math.floor(Number(n)||0));
+const format=n=>{
+n=clamp(n);
+const h=Math.floor(n/3600),m=Math.floor(n%3600/60),s=n%60;
+return (h?h+":":"")+String(m).padStart(2,"0")+":"+String(s).padStart(2,"0");
+};
+const clean=s=>({
+name:String(s.name||"Segment").slice(0,100),
+type:s.type==="rest"?"rest":"run",
+seconds:Math.max(1,Math.min(359999,clamp(s.seconds)))
+});
+const notify=t=>$("status").textContent=t;
+function readSaved(){
+try{return JSON.parse(localStorage.getItem(KEY)||"{}")||{}}
+catch{return {}}
+}
+function saveDraft(){
+try{localStorage.setItem(DRAFT,JSON.stringify({
+segments,name:$("workoutName").value,mode:$("mode").value
+}))}catch{}
+}
+function stop(){
+if(running){elapsed+=(performance.now()-last)/1000;running=false}
+clearInterval(ticker);ticker=null;
+}
+function reset(){
+stop();index=0;elapsed=0;display();
+}
+function beep(){
+if(!$("sound").checked)return;
+try{
+audio=audio||new(window.AudioContext||window.webkitAudioContext)();
+audio.resume();
+const o=audio.createOscillator(),g=audio.createGain();
+o.frequency.value=880;g.gain.value=.15;
+o.connect(g).connect(audio.destination);
+o.start();o.stop(audio.currentTime+.2);
+}catch{}
+}
+function remaining(){
+return Math.max(0,(segments[index]?.seconds||0)-elapsed)+
+segments.slice(index+1).reduce((a,s)=>a+s.seconds,0);
+}
+function display(){
+const s=segments[index];
+$("phase").textContent=s?(s.name||"Unnamed Segment"):"Workout Complete";
+$("clock").textContent=format(s?(
+$("mode").value==="up"?Math.min(s.seconds,elapsed):
+Math.max(0,s.seconds-elapsed)):0);
+$("progress").textContent="Segment "+(s?index+1:segments.length)+" of "+segments.length+
+(s?" • "+(s.type==="rest"?"Recovery":"Run / Work"):"");
+$("remaining").textContent="Workout Remaining: "+format(remaining());
+$("timerPanel").classList.toggle("rest",s?.type==="rest");
+$("start").disabled=running||!s;
+$("pause").disabled=!running;
+$("skip").disabled=!s;
+}
+function tick(){
+if(!running)return;
+const now=performance.now();
+elapsed+=Math.max(0,(now-last)/1000);last=now;
+let changed=false;
+while(index<segments.length&&elapsed>=segments[index].seconds){
+elapsed-=segments[index].seconds;index++;changed=true;
+}
+if(changed)beep();
+if(index>=segments.length){
+running=false;clearInterval(ticker);ticker=null;elapsed=0;
+notify("Workout complete!");
+}
+display();
+}
+function render(){
+const root=$("segments");root.replaceChildren();
+segments.forEach((s,i)=>{
+const box=document.createElement("div");box.className="segment";
+const heading=document.createElement("strong");
+heading.textContent="Segment "+(i+1);
+box.append(heading);
+const row=document.createElement("div");row.className="row";
+const name=document.createElement("input");
+name.type="text";name.value=s.name;name.placeholder="Segment name";
+name.style.flex="1";name.style.minWidth="150px";
+name.oninput=()=>{s.name=name.value;saveDraft();display()};
+row.append(name);
+const type=document.createElement("select");
+[["run","Run / Work"],["rest","Recovery"]].forEach(([v,t])=>{
+const o=document.createElement("option");o.value=v;o.textContent=t;type.append(o);
+});
+type.value=s.type;
+type.onchange=()=>{s.type=type.value;saveDraft();display()};
+row.append(type);
+const min=document.createElement("input");
+min.type="number";min.min=0;min.max=5999;min.value=Math.floor(s.seconds/60);
+min.title="Minutes";
+const sec=document.createElement("input");
+sec.type="number";sec.min=0;sec.max=59;sec.value=s.seconds%60;
+sec.title="Seconds";
+function changeTime(){
+const m=clamp(min.value),ss=Math.min(59,clamp(sec.value));
+s.seconds=Math.max(1,Math.min(359999,m*60+ss));
+reset();render();saveDraft();
+}
+min.onchange=changeTime;sec.onchange=changeTime;
+const ml=document.createElement("label");ml.textContent="Min ";ml.append(min);
+const sl=document.createElement("label");sl.textContent="Sec ";sl.append(sec);
+row.append(ml,sl);
+const remove=document.createElement("button");
+remove.textContent="Remove";remove.className="danger";
+remove.onclick=()=>{segments.splice(i,1);reset();render();saveDraft()};
+row.append(remove);box.append(row);root.append(box);
+});
+display();
+}
+$("start").onclick=()=>{
+if(!segments[index])return;
+try{audio=audio||new(window.AudioContext||window.webkitAudioContext)();audio.resume()}catch{}
+running=true;last=performance.now();
+ticker=setInterval(tick,100);display();
+};
+$("pause").onclick=()=>{tick();stop();display()};
+$("skip").onclick=()=>{
+if(index>=segments.length)return;
+index++;elapsed=0;
+if(running)last=performance.now();
+beep();
+if(index>=segments.length)stop();
+display();
+};
+$("reset").onclick=reset;
+$("mode").onchange=()=>{saveDraft();display()};
+$("workoutName").oninput=saveDraft;
+$("add").onclick=()=>{
+segments.push({name:"New Segment",type:"run",seconds:60});
+reset();render();saveDraft();
+};
+$("pair").onclick=()=>{
+segments.push({name:"Run",type:"run",seconds:60},
+{name:"Recovery",type:"rest",seconds:60});
+reset();render();saveDraft();
+};
+$("repeat").onclick=()=>{
+if(!segments.length)return;
+const n=Number(prompt("How many TOTAL copies of this sequence? (2–100)","2"));
+if(!Number.isInteger(n)||n<2||n>100)return;
+if(segments.length*n>1000){alert("Maximum 1,000 segments.");return}
+const original=segments.map(clean);
+segments=Array.from({length:n},()=>original.map(s=>({...s}))).flat();
+reset();render();saveDraft();
+};
+function refresh(){
+const sel=$("saved"),previous=sel.value;
+sel.replaceChildren();
+const first=document.createElement("option");
+first.value="";first.textContent="Select saved workout";sel.append(first);
+Object.keys(readSaved()).sort().forEach(name=>{
+const o=document.createElement("option");o.value=name;o.textContent=name;sel.append(o);
+});
+sel.value=previous;
+}
+$("save").onclick=()=>{
+const name=$("workoutName").value.trim();
+if(!name)return notify("Enter a workout name first.");
+if(!segments.length)return notify("Add at least one segment.");
+const all=readSaved();
+if(all[name]&&!confirm("Replace saved workout "+name+"?"))return;
+all[name]={segments:segments.map(clean),mode:$("mode").value};
+try{
+localStorage.setItem(KEY,JSON.stringify(all));
+refresh();$("saved").value=name;notify("Saved: "+name);
+}catch{notify("Browser storage unavailable.");}
+};
+$("load").onclick=()=>{
+const name=$("saved").value,entry=readSaved()[name];
+if(!entry)return notify("Choose a saved workout.");
+segments=(entry.segments||[]).map(clean);
+$("workoutName").value=name;
+$("mode").value=entry.mode==="up"?"up":"down";
+reset();render();saveDraft();notify("Loaded: "+name);
+};
+$("delete").onclick=()=>{
+const name=$("saved").value;
+if(!name)return notify("Choose a saved workout.");
+if(!confirm("Delete "+name+"?"))return;
+const all=readSaved();delete all[name];
+localStorage.setItem(KEY,JSON.stringify(all));
+refresh();notify("Deleted: "+name);
+};
+try{
+const d=JSON.parse(localStorage.getItem(DRAFT)||"null");
+if(d&&Array.isArray(d.segments)){
+segments=d.segments.map(clean);
+$("workoutName").value=d.name||"";
+$("mode").value=d.mode==="up"?"up":"down";
+}
+}catch{}
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)tick()});
+refresh();render();
+})();
+</script>
+</body>
+</html>
